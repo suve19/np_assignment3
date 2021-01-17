@@ -1,17 +1,24 @@
 CC = gcc
 CC_FLAGS = -w -g
- 
- 
- 
-all: test 
 
 
-main.o: main.cpp
-	$(CC) -Wall -c main.cpp -I.
+
+all: test client server
+
+
+main.o: main.c
+	$(CC) -Wall -I. -c main.c
 
 
 test: main.o
-	$(CC) -L./ -Wall -o test main.o 
+	$(CC) -I./ -Wall -lncurses  -o test main.o 
+
+
+client: client.o
+	$(CC) -Wall -o cchat client.o
+
+server: server.o
+	$(CC) -Wall -o cserverd server.o
 
 
 clean:
