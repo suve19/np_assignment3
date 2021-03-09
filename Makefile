@@ -6,12 +6,12 @@ CC_FLAGS = -w -g
 all: test client server
 
 
-main.o: main.c
-	$(CC) -Wall -I. -c main.c
+main_curses.o: main_curses.c
+	$(CC) -Wall -I. -c main_curses.c
 
 
-test: main.o
-	$(CC) -I./ -Wall -lncurses  -o test main.o 
+test: main_curses.o
+	$(CC) -I./ -Wall main_curses.o -lncurses  -o test 
 
 
 client: client.o
@@ -22,4 +22,4 @@ server: server.o
 
 
 clean:
-	rm *.o *.a test server client
+	rm *.o *.a test cserverd cchat
