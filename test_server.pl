@@ -11,6 +11,7 @@ use Time::HiRes qw(time);
 use threads;
 use threads::shared;
 use String::Diff;
+use String::Dump qw (dump_hex );
 use Config;
 $Config{useithreads} or
     die('Recompile Perl with threads to run this program.');
@@ -93,8 +94,9 @@ sub clientSub {
     
 
 sub depart() {
-    print "Im the departing subroutine, Errors: $errorCount.\n";
-    print "$errorLogString\n";
+    print FH "Im the departing subroutine, Errors: $errorCount.\n";
+    print FH "$errorLogString\n";
+    close(FH);
     exit(1);
 }
 
@@ -163,7 +165,7 @@ $noLRhello=$NICKstatus;
 $noLRhello =~ s/\n//g;
 print FH "=>|" . $noLRhello . "|\n";
 if ( $NICKstatus =~ m/ERROR/i ) {
-    print "$longNICK passed the test, generated an error.\n\n";
+    print FH "$longNICK passed the test, generated an error.\n\n";
 } elsif ( $NICKstatus =~ m/OK/i ){
     print FH "ERROR: The proposed NICK is too long, should generate\n";
     print FH "       an ERROR of some kind. We got: $NICKstatus .\n";
@@ -241,11 +243,11 @@ $noLRhello =~ s/\n//g;
 #print "=>|" . $noLRhello . "|\n";
 
 if ( $NICKstatus =~ m/ERROR/i ) {
-    print "$longNICK passed the test, generated an error.\n\n";
+    print FH "$longNICK passed the test, generated an error.\n\n";
 } elsif ( $NICKstatus =~ m/OK/i ){
-    print "ISSUE: The proposed NICK is bad, should generate\n";
-    print "       an ERROR of some kind. We got:  $NICKstatus \n";
-    print "       Breaking protocol, but continuing tests.\n";
+    print FH "ISSUE: The proposed NICK is bad, should generate\n";
+    print FH "       an ERROR of some kind. We got:  $NICKstatus \n";
+    print FH "       Breaking protocol, but continuing tests.\n";
     $errorLogString="Issue with bad Nick2 test ($longNICK).\n$errorLogString";
 } else {
     print FH "ERROR: Did not get ERROR or OK back.\n";
@@ -408,8 +410,89 @@ for(my $i=0;$i<$tests;$i++) {
 print "\n";
 
 if ($clientCount==0){
-    print "ERROR: No clients were accepted!\n";
-    exit(1);
+    print "No clients with digits were accepted!\n";
+    print "Launching NEW clients. \n";
+    %clients=();
+##################3
+    for(my $i=0;$i<$tests;$i++) {
+	$socket = IO::Socket::INET->new(PeerAddr => $remote_host,
+					PeerPort => $remote_port,
+					Proto    => "tcp",
+					Timeout  => 2,
+					Type     => SOCK_STREAM)
+	    or die "Couldn't connect to $remote_host:$remote_port : $@\n";
+	
+	$nickName="TC".random_regex('[A-Z]{2}[a-z]{2}');
+	$haystackOfNames="$nickName $haystackOfNames";
+	IO::Socket::Timeout->enable_timeouts_on($socket);
+	$socket->read_timeout(3);
+	$socket->write_timeout(0.5);
+	
+	
+	$helloMsg = <$socket>;
+	#    chomp $helloMsg;
+	#    print "Server said: |$helloMsg|\n";
+	if ( $helloMsg =~ m[Hello 1\n]i ) {
+	    print ".";
+	} elsif  ( $helloMsg =~ m[Hello 1.0\n]i ) {
+	    print ".";
+	} else {
+	    print FH "Server said; |$helloMsg| not as expected.\n";
+	    $errorLogString="Incorrect connection for $nickName.\n$errorLogString";
+	    print $socket "ERROR\n";
+	    close($socket);
+	    depart();
+	    exit; 
+	}
+	#Send NICK
+	
+	print $socket "NICK $nickName\n";
+	$tim1=time;
+	$NICKstatus=<$socket>;
+	$tim2=time;
+	
+	
+	##    printf "=> |$NICKstatus| " . ($tim2-$tim1) . "(s)\n";
+	
+	my $word = $textArray[ rand @textArray ];
+	my $stringStore="";
+	my $tmpKey;
+	for(my $k=0;$k<$WORDCNT;$k++){
+	    $word = $textArray[ rand @textArray ];
+	    $tmpKey="$nickName$word";
+	    $nickWordCombo{$tmpKey}=1;
+	    $stringStore="$word $stringStore";
+	}
+	
+	
+	if ( $NICKstatus =~ m[OK\n]i ) {
+	    my %data=(
+		'sock' => $socket,
+		'nick' => "$nickName",
+		'id' => "$i",
+		'words' => "$stringStore",	    
+		);
+	    $clients{$nickName} = \%data;
+	    $clientCount++;
+	    #	print $socket->sockhost() . ":" . $socket->sockport() ." --> " . $socket->peeraddr() . ":" . $socket->peerport ." ";
+	    print FH "Added $nickName with id=$i, took " . ($tim2-$tim1)*1000 ." [ms] \n";
+	} else {
+	    print FH "Server rejected $nickName, took " . ($tim2-$tim1)*1000 . "[ms] \n";
+	    print "Server rejected $nickName, took " . ($tim2-$tim1)*1000 . "[ms] \n";
+	    print "Got|$NICKstatus|\n";
+	    $errorLogString="Server rejected $nickName.\n$errorLogString";
+	    $errorCount++;
+	}
+    }
+
+    if ($clientCount==0){
+	print FH "No clients without were accepted!\n";
+	print FH "Giving up!\n";
+	exit(1);
+    }
+    
+    
+    #################3
 }
 ##print "\nGot $clientCount accepted clients.\n\n";
 
@@ -460,9 +543,11 @@ for(my $i=0;$i<$#clist;$i++){
 	    print FH "Missing all parts of what I was looking for.\n";
 	    print FH "'MSG Bob Helloworld!'\n";
 	    print FH "|$response|\n";
+	    print FH "HEX: |". dump_hex($response) . "|\n";
 	    ($old,$new)=String::Diff::diff('MSG Bob Helloworld!',$response);
 	    print "old='$old'\n";
 	    print "new='$new'\n";
+	    print "HEX: |". dump_hex($response) . "|\n";
 	    $errorLogString=$clients{$clist[$i]}{nick}. " missing all relevant parts of 'MSG Bob Hello Word!\\n'.\n$errorLogString";	     
 	    $errorCount+=4;
 	}
@@ -499,7 +584,9 @@ print "Giving clients sentMsg=$sentMsg, waiting 5s.\n";
 sleep(5);
 print "Clients have now sent $sentMsg messages.\n";
 print "Telling clients to stop.\n\n";
-print $Bobsocket "MSG DROP";
+print $Bobsocket "MSG DROP\n";
+print $Bobsocket "MSG DROP\n";
+print $Bobsocket "MSG DROP\n";
 
 print "Starting with a msgCount=$msgCount.\n";
 
@@ -563,10 +650,10 @@ for(my $i=0;$i<$messages;$i++){
 
 
 
-print "\nWe left the read part, these are left (should be zero.), " . length( keys %nickWordCombo) . "\n";
+print FH "\nWe left the read part, these are left (should be zero.), " . length( keys %nickWordCombo) . "\n";
 my $element;
 for $element ( keys %nickWordCombo ) {
-    print "element = $element \n";
+    print FH "element = $element \n";
 }
     
 print "\n";
@@ -581,7 +668,6 @@ print "\n";
 
 
 #print FH "$tests $correctCount $errorCount\n";
-close(FH);
 
 
 print "Closing server test script.\n";
