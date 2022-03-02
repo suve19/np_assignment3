@@ -24,6 +24,16 @@ $Config{useithreads} or
 my ($rout, $fromClient,$toClient,$line,$errorCount,$errorLogString);
 my $rin= '';
 
+#print "arguments $#ARGV.\n";
+if ( $#ARGV != 2 ) {
+    print "Wrong syntax.\n";
+    print "Syntax: \n";
+    print "test_client.pl <IP:Port> MainLog ExecutionLog\n";
+    print " \n";
+    print "IP is the IP of the server.\n";
+    print "Port is the port of the server.\n";
+    exit(1);
+}
 
 ##########FUNCTIONS
 
@@ -101,7 +111,7 @@ sub depart() {
 
 
 #my $remote_host='127.0.0.1';
-#my $remote_port=5001;
+#my $remote_port=6000;
 
 my $remote=shift;
 
@@ -116,8 +126,17 @@ my $fexe=shift;
 my $READTIMEOUT=3.0;
 my $WORDCNT=2;
 
-print "Starting client test ($remote_host:$remote_port), storing to $fout, sleeping 2s.\n";
-my  $text="Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua Ut enim ad minim veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur Excepteur sint occaecat cupidatat non proident sunt in culpa qui officia deserunt mollit anim id est laborum";
+
+
+
+print "Starting client test ($remote_host:$remote_port), storing to $fout and $fexe, sleeping 2s.\n";
+print "This connects to the server, and tests how it behaves. To terminate the test, launch a \n";
+print "client (nc) register (NICK), and send a message 'MSG DROP'. The clients will pick it\n";
+print "up and terminate, that in turn will terminate the application.\n";
+
+    
+#my  $text="Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt ut labore et dolore magna aliqua Ut enim ad minim veniam quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat Duis aute irure dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla pariatur Excepteur sint occaecat cupidatat non proident sunt in culpa qui officia deserunt mollit anim id est laborum";
+my  $text="one two three four five six seven eight nine ten";
 my @textArray=split(/ /, $text);
 
 
@@ -125,7 +144,7 @@ open(FH, '>', "$fout") or die $!;
 open(EXH, '>', "$fexe") or die $!;
 
 
-print FH "Starting client test ($remote_host:$remote_port), storing to $fout, sleeping 2s.\n";
+print FH "Starting client test ($remote_host:$remote_port), storing to $fout and $fexe, sleeping 2s.\n";
 #sleep(2);
 
 my ($op,$v1,$v2,$remainder, $socket, $helloMsg,$assignment,$result,$response,$correctCount);
@@ -244,7 +263,8 @@ for(my $i=0;$i<$tests;$i++) {
     my $stringStore="";
     my $tmpKey;
     for(my $k=0;$k<$WORDCNT;$k++){
-	$word = $textArray[ rand @textArray ];
+#	$word = $textArray[ rand @textArray ];
+	$word = $textArray[ $k ]; 
 	$tmpKey="$nickName$word";
 	$nickWordCombo{$tmpKey}=1;
 	$stringStore="$word $stringStore";
