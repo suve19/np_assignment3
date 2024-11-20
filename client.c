@@ -13,6 +13,14 @@
 // Dictionary to store message queues for each client
 std::unordered_map<int, std::queue<std::string>> message_buffers;
 
+// Function to broadcast messages to all other clients
+void broadcast_message(int sender_socket, const std::string& message, const std::vector<int>& clients) {
+    for (int client : clients) {
+        if (client != sender_socket) {
+            message_buffers[client].push(message);  // Store message in each client's buffer
+        }
+    }
+}
 
 int main(int argc, char* argv[]) {
     if (argc != 2) {
@@ -114,7 +122,35 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        
+        // Handle messages from clients
+        for (int client : clients) {
+            if (FD_ISSET(client, &read_fds)) {
+                char buffer[1024] = {0};
+                int bytes_received = recv(client, buffer, sizeof(buffer), 0);
+                if (bytes_received <= 0) {
+                    // Client disconnected
+                    std::cerr << "Client disconnected\n";
+                    close(client);
+                    clients.erase(std::remove(clients.begin(), clients.end(), client), clients.end());
+                    message_buffers.erase(client);
+                    continue;
+                }
+
+                std::string message(buffer, bytes_received);
+                std::cout << "Received message from client " << client << ": " << message << "\n";
+                
+                // Immediately broadcast the message to other clients
+                broadcast_message(client, message, clients);
+            }
+
+            // Send buffered messages to clients
+            if (FD_ISSET(client, &write_fds)) {
+                while (!message_buffers[client].empty()) {
+                    std::string message_to_send = message_buffers[client].front();
+                    send(client, message_to_send.c_str(), message_to_send.length(), 0);
+                    message_buffers[client].pop();
+                }
+            }
         }
     }
 
