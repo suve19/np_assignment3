@@ -1,116 +1,191 @@
-#include <iostream>
-#include <cstring>
-#include <regex>
-#include <sys/socket.h>
-#include <arpa/inet.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
-#include <thread>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <sys/types.h>
+#include <errno.h>
 
-// Function to handle receiving messages from the server
-void receive_messages(int sock) {
-    char buffer[1024];
-    while (true) {
-        memset(buffer, 0, sizeof(buffer));
-        int bytes_received = recv(sock, buffer, sizeof(buffer), 0);
-        if (bytes_received > 0) {
-            std::cout << std::string(buffer, bytes_received) << std::endl;
-        } else if (bytes_received == 0) {
-            std::cout << "Server disconnected\n";
-            break;
-        } else {
-            std::cerr << "Error receiving message from server\n";
-            break;
+#define MAX_CLIENTS 100
+#define BUFFER_SIZE 1024
+
+// Structure to store a message queue for each client
+typedef struct {
+    int client_socket;
+    char message_queue[MAX_CLIENTS][BUFFER_SIZE];
+    int queue_start;
+    int queue_end;
+} Client;
+
+// Global array of clients
+Client clients[MAX_CLIENTS];
+int num_clients = 0;
+
+// Function to add a message to the client's message queue
+void add_message_to_queue(Client *client, const char *message) {
+    if ((client->queue_end + 1) % MAX_CLIENTS != client->queue_start) { // Check for queue overflow
+        strcpy(client->message_queue[client->queue_end], message);
+        client->queue_end = (client->queue_end + 1) % MAX_CLIENTS;
+    }
+}
+
+// Function to pop a message from the client's message queue
+int pop_message_from_queue(Client *client, char *message) {
+    if (client->queue_start == client->queue_end) {
+        return 0; // Queue is empty
+    }
+    strcpy(message, client->message_queue[client->queue_start]);
+    client->queue_start = (client->queue_start + 1) % MAX_CLIENTS;
+    return 1;
+}
+
+// Function to broadcast a message to all clients except the sender
+void broadcast_message(int sender_socket, const char *message) {
+    for (int i = 0; i < num_clients; i++) {
+        if (clients[i].client_socket != sender_socket) {
+            add_message_to_queue(&clients[i], message);
         }
     }
 }
 
-bool validate_nickname(const std::string& nickname) {
-    if (nickname.length() > 12) {
-        std::cerr << "Error: Nickname must not exceed 12 characters.\n";
-        return false;
-    }
-
-    std::regex nickname_pattern("^[A-Za-z0-9_]+$");
-    if (!std::regex_match(nickname, nickname_pattern)) {
-        std::cerr << "Error: Nickname can only contain alphanumeric characters and underscores.\n";
-        return false;
-    }
-    return true;
-}
-
-int main(int argc, char* argv[]) {
-    if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <ip>:<port> <name>\n";
+int main(int argc, char *argv[]) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: ./server <ip>:<port>\n");
         return -1;
     }
 
-    // Parse <ip>:<port>
-    std::string arg = argv[1];
-    size_t colon_pos = arg.find(':');
-    if (colon_pos == std::string::npos) {
-        std::cerr << "Error: Invalid format. Use <ip>:<port>\n";
-        return -1;
-    }
-    std::string ip = arg.substr(0, colon_pos);
-    int port = std::stoi(arg.substr(colon_pos + 1));
-
-    // Parse nickname and validate
-    std::string client_name = argv[2];
-    if (!validate_nickname(client_name)) {
+    // Parse IP and port from the argument
+    char *colon_pos = strchr(argv[1], ':');
+    if (!colon_pos) {
+        fprintf(stderr, "Invalid format. Use <ip>:<port>\n");
         return -1;
     }
 
-    // Create socket
-    int sock = 0;
-    struct sockaddr_in serv_addr;
-    if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        std::cerr << "Socket creation error\n";
+    char ip[100];
+    int port;
+    strncpy(ip, argv[1], colon_pos - argv[1]);
+    ip[colon_pos - argv[1]] = '\0';
+    port = atoi(colon_pos + 1);
+
+    // Create the server socket
+    int server_socket = socket(AF_INET, SOCK_STREAM, 0);
+    if (server_socket < 0) {
+        perror("Socket creation failed");
         return -1;
     }
 
-    // Specify server address and port
-    serv_addr.sin_family = AF_INET;
-    serv_addr.sin_port = htons(port);
+    // Define server address
+    struct sockaddr_in server_addr;
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = inet_addr(ip);
+    server_addr.sin_port = htons(port);
 
-    // Convert IPv4 address from text to binary
-    if (inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr) <= 0) {
-        std::cerr << "Invalid address/ Address not supported\n";
+    // Bind the socket
+    if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
+        perror("Bind failed");
+        close(server_socket);
         return -1;
     }
 
-    // Connect to the server
-    if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        std::cerr << "Connection Failed\n";
+    // Listen for incoming connections
+    if (listen(server_socket, 3) < 0) {
+        perror("Listen failed");
+        close(server_socket);
         return -1;
     }
 
-    // Create a separate thread for receiving messages
-    std::thread receive_thread(receive_messages, sock);
+    printf("Server is listening on %s:%d...\n", ip, port);
 
-    // Main thread for sending messages
-    while (true) {
-        std::string message;
-        std::getline(std::cin, message);
+    fd_set read_fds, write_fds;
+    int max_sd = server_socket;
 
-        // Exit on "exit" command
-        if (message == "exit") {
+    while (1) {
+        FD_ZERO(&read_fds);
+        FD_ZERO(&write_fds);
+        FD_SET(server_socket, &read_fds);
+
+        for (int i = 0; i < num_clients; i++) {
+            FD_SET(clients[i].client_socket, &read_fds);
+            if (clients[i].queue_start != clients[i].queue_end) {
+                FD_SET(clients[i].client_socket, &write_fds);
+            }
+            if (clients[i].client_socket > max_sd) {
+                max_sd = clients[i].client_socket;
+            }
+        }
+
+        // Use select() to monitor sockets
+        int activity = select(max_sd + 1, &read_fds, &write_fds, NULL, NULL);
+        if (activity < 0 && errno != EINTR) {
+            perror("Select error");
             break;
         }
 
-        // Validate message length
-        if (message.length() > 255) {
-            std::cerr << "Error: Message length must not exceed 255 characters.\n";
-            continue;
+        // Handle new connections
+        if (FD_ISSET(server_socket, &read_fds)) {
+            struct sockaddr_in client_addr;
+            socklen_t addr_len = sizeof(client_addr);
+            int new_socket = accept(server_socket, (struct sockaddr *)&client_addr, &addr_len);
+            if (new_socket < 0) {
+                perror("Accept failed");
+                continue;
+            }
+
+            // Add new client to the clients array
+            if (num_clients < MAX_CLIENTS) {
+                clients[num_clients].client_socket = new_socket;
+                clients[num_clients].queue_start = 0;
+                clients[num_clients].queue_end = 0;
+                num_clients++;
+
+                char client_ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+                printf("New client connected from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+            } else {
+                fprintf(stderr, "Max clients reached. Connection rejected.\n");
+                close(new_socket);
+            }
         }
 
-        // Prepend client name to the message
-        std::string full_message = client_name + ": " + message;
-        send(sock, full_message.c_str(), full_message.size(), 0);
+        // Handle communication with clients
+        for (int i = 0; i < num_clients; i++) {
+            int client_socket = clients[i].client_socket;
+
+            // Check if client sent a message
+            if (FD_ISSET(client_socket, &read_fds)) {
+                char buffer[BUFFER_SIZE] = {0};
+                int bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
+                if (bytes_received <= 0) {
+                    // Client disconnected
+                    printf("Client disconnected\n");
+                    close(client_socket);
+
+                    // Remove client from array
+                    clients[i] = clients[num_clients - 1];
+                    num_clients--;
+                    i--;
+                    continue;
+                }
+
+                buffer[bytes_received] = '\0';
+                printf("Received message from client %d: %s\n", client_socket, buffer);
+
+                // Broadcast the message to other clients
+                broadcast_message(client_socket, buffer);
+            }
+
+            // Check if client has messages to send
+            if (FD_ISSET(client_socket, &write_fds)) {
+                char message[BUFFER_SIZE];
+                while (pop_message_from_queue(&clients[i], message)) {
+                    send(client_socket, message, strlen(message), 0);
+                }
+            }
+        }
     }
 
-    // Close the socket and wait for the receive thread to finish
-    close(sock);
-    receive_thread.join();
-
+    close(server_socket);
     return 0;
 }

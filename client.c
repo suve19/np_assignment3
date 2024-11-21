@@ -1,70 +1,93 @@
-#include <iostream>
-#include <cstring>
-#include <regex>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <regex.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <unistd.h>
-#include <thread>
+#include <pthread.h>
+
+#define BUFFER_SIZE 1024
 
 // Function to handle receiving messages from the server
-void receive_messages(int sock) {
-    char buffer[1024];
-    while (true) {
+void* receive_messages(void* sock_ptr) {
+    int sock = *(int*)sock_ptr;
+    char buffer[BUFFER_SIZE];
+
+    while (1) {
         memset(buffer, 0, sizeof(buffer));
-        int bytes_received = recv(sock, buffer, sizeof(buffer), 0);
+        int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+
         if (bytes_received > 0) {
-            std::cout << std::string(buffer, bytes_received) << std::endl;
+            printf("%s\n", buffer);
         } else if (bytes_received == 0) {
-            std::cout << "Server disconnected\n";
+            printf("Server disconnected\n");
             break;
         } else {
-            std::cerr << "Error receiving message from server\n";
+            perror("Error receiving message from server");
             break;
         }
     }
+    return NULL;
 }
 
-bool validate_nickname(const std::string& nickname) {
-    if (nickname.length() > 12) {
-        std::cerr << "Error: Nickname must not exceed 12 characters.\n";
-        return false;
+// Function to validate nickname
+int validate_nickname(const char* nickname) {
+    if (strlen(nickname) > 12) {
+        fprintf(stderr, "Error: Nickname must not exceed 12 characters.\n");
+        return 0;
     }
 
-    std::regex nickname_pattern("^[A-Za-z0-9_]+$");
-    if (!std::regex_match(nickname, nickname_pattern)) {
-        std::cerr << "Error: Nickname can only contain alphanumeric characters and underscores.\n";
-        return false;
+    regex_t regex;
+    const char* pattern = "^[A-Za-z0-9_]+$";
+
+    if (regcomp(&regex, pattern, REG_EXTENDED)) {
+        fprintf(stderr, "Error compiling regex.\n");
+        return 0;
     }
-    return true;
+
+    int reti = regexec(&regex, nickname, 0, NULL, 0);
+    regfree(&regex);
+
+    if (reti) {
+        fprintf(stderr, "Error: Nickname can only contain alphanumeric characters and underscores.\n");
+        return 0;
+    }
+
+    return 1;
 }
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <ip>:<port> <name>\n";
+        fprintf(stderr, "Usage: %s <ip>:<port> <name>\n", argv[0]);
         return -1;
     }
 
     // Parse <ip>:<port>
-    std::string arg = argv[1];
-    size_t colon_pos = arg.find(':');
-    if (colon_pos == std::string::npos) {
-        std::cerr << "Error: Invalid format. Use <ip>:<port>\n";
+    char* arg = argv[1];
+    char* colon_pos = strchr(arg, ':');
+    if (!colon_pos) {
+        fprintf(stderr, "Error: Invalid format. Use <ip>:<port>\n");
         return -1;
     }
-    std::string ip = arg.substr(0, colon_pos);
-    int port = std::stoi(arg.substr(colon_pos + 1));
 
-    // Parse nickname and validate
-    std::string client_name = argv[2];
+    char ip[100];
+    int port;
+    strncpy(ip, arg, colon_pos - arg);
+    ip[colon_pos - arg] = '\0';
+    port = atoi(colon_pos + 1);
+
+    // Validate nickname
+    char* client_name = argv[2];
     if (!validate_nickname(client_name)) {
         return -1;
     }
 
     // Create socket
-    int sock = 0;
+    int sock;
     struct sockaddr_in serv_addr;
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
-        std::cerr << "Socket creation error\n";
+        perror("Socket creation error");
         return -1;
     }
 
@@ -73,44 +96,52 @@ int main(int argc, char* argv[]) {
     serv_addr.sin_port = htons(port);
 
     // Convert IPv4 address from text to binary
-    if (inet_pton(AF_INET, ip.c_str(), &serv_addr.sin_addr) <= 0) {
-        std::cerr << "Invalid address/ Address not supported\n";
+    if (inet_pton(AF_INET, ip, &serv_addr.sin_addr) <= 0) {
+        fprintf(stderr, "Invalid address/ Address not supported\n");
         return -1;
     }
 
     // Connect to the server
     if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        std::cerr << "Connection Failed\n";
+        perror("Connection Failed");
         return -1;
     }
 
     // Create a separate thread for receiving messages
-    std::thread receive_thread(receive_messages, sock);
+    pthread_t receive_thread;
+    if (pthread_create(&receive_thread, NULL, receive_messages, &sock) != 0) {
+        perror("Error creating thread");
+        return -1;
+    }
 
     // Main thread for sending messages
-    while (true) {
-        std::string message;
-        std::getline(std::cin, message);
+    char message[256];
+    while (1) {
+        if (fgets(message, sizeof(message), stdin) == NULL) {
+            break;
+        }
+        message[strcspn(message, "\n")] = '\0';  // Remove newline character
 
         // Exit on "exit" command
-        if (message == "exit") {
+        if (strcmp(message, "exit") == 0) {
             break;
         }
 
         // Validate message length
-        if (message.length() > 255) {
-            std::cerr << "Error: Message length must not exceed 255 characters.\n";
+        if (strlen(message) > 255) {
+            fprintf(stderr, "Error: Message length must not exceed 255 characters.\n");
             continue;
         }
 
         // Prepend client name to the message
-        std::string full_message = client_name + ": " + message;
-        send(sock, full_message.c_str(), full_message.size(), 0);
+        char full_message[300];
+        snprintf(full_message, sizeof(full_message), "%s: %s", client_name, message);
+        send(sock, full_message, strlen(full_message), 0);
     }
 
     // Close the socket and wait for the receive thread to finish
     close(sock);
-    receive_thread.join();
+    pthread_join(receive_thread, NULL);
 
     return 0;
 }
