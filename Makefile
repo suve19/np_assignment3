@@ -15,7 +15,7 @@ test: main_curses.o
 
 
 client: client.o
-	$(CC) -Wall -o cchat client.o
+	$(CC) -Wall -o cchat client.o -pthread
 
 server: server.o
 	$(CC) -Wall -o cserverd server.o
