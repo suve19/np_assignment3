@@ -103,7 +103,7 @@ int main(int argc, char* argv[]) {
 
     // Connect to the server
     if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("Connection Failed");
+        perror("ERROR");
         return -1;
     }
 
