@@ -53,6 +53,7 @@ void broadcast_message(int sender_socket, const char *message) {
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: ./server <ip>:<port>\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -60,6 +61,7 @@ int main(int argc, char *argv[]) {
     char *colon_pos = strchr(argv[1], ':');
     if (!colon_pos) {
         fprintf(stderr, "Invalid format. Use <ip>:<port>\n");
+        fflush(stderr);
         return -1;
     }
 
@@ -73,6 +75,7 @@ int main(int argc, char *argv[]) {
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0) {
         perror("Socket creation failed");
+        fflush(stderr);
         return -1;
     }
 
@@ -85,6 +88,7 @@ int main(int argc, char *argv[]) {
     // Bind the socket
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed");
+        fflush(stderr);
         close(server_socket);
         return -1;
     }
@@ -92,11 +96,13 @@ int main(int argc, char *argv[]) {
     // Listen for incoming connections
     if (listen(server_socket, 3) < 0) {
         perror("Listen failed");
+        fflush(stderr);
         close(server_socket);
         return -1;
     }
 
     printf("Server is listening on %s:%d...\n", ip, port);
+    fflush(stdout);
 
     fd_set read_fds, write_fds;
     int max_sd = server_socket;
@@ -120,6 +126,7 @@ int main(int argc, char *argv[]) {
         int activity = select(max_sd + 1, &read_fds, &write_fds, NULL, NULL);
         if (activity < 0 && errno != EINTR) {
             perror("Select error");
+            fflush(stderr);
             break;
         }
 
@@ -130,6 +137,7 @@ int main(int argc, char *argv[]) {
             int new_socket = accept(server_socket, (struct sockaddr *)&client_addr, &addr_len);
             if (new_socket < 0) {
                 perror("Accept failed");
+                fflush(stderr);
                 continue;
             }
 
@@ -143,8 +151,10 @@ int main(int argc, char *argv[]) {
                 char client_ip[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
                 printf("New client connected from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
+                fflush(stdout);
             } else {
                 fprintf(stderr, "Max clients reached. Connection rejected.\n");
+                fflush(stderr);
                 close(new_socket);
             }
         }
@@ -160,6 +170,7 @@ int main(int argc, char *argv[]) {
                 if (bytes_received <= 0) {
                     // Client disconnected
                     printf("Client disconnected\n");
+                    fflush(stdout);
                     close(client_socket);
 
                     // Remove client from array
@@ -170,7 +181,6 @@ int main(int argc, char *argv[]) {
                 }
 
                 buffer[bytes_received] = '\0';
-                printf("Received message from client %d: %s\n", client_socket, buffer);
 
                 // Broadcast the message to other clients
                 broadcast_message(client_socket, buffer);
