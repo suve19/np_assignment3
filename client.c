@@ -9,9 +9,16 @@
 
 #define BUFFER_SIZE 1024
 
-// Function to handle receiving messages from the server
-void* receive_messages(void* sock_ptr) {
-    int sock = *(int*)sock_ptr;
+// Structure to pass multiple arguments to the thread function
+typedef struct {
+    int sock;
+    char client_name[13];  // Max 12 characters + null terminator
+} thread_args;
+
+
+void* receive_messages(void* args_ptr) {
+    thread_args* args = (thread_args*)args_ptr;
+    int sock = args->sock;
     char buffer[BUFFER_SIZE];
 
     while (1) {
@@ -19,8 +26,31 @@ void* receive_messages(void* sock_ptr) {
         int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
 
         if (bytes_received > 0) {
-            printf("%s\n", buffer);
+            buffer[bytes_received] = '\0'; // Null-terminate the received string
+
+            // Check for "MSG " prefix
+            if (strncmp(buffer, "MSG ", 4) == 0) {
+                char* nick_start = buffer + 4;   // Start after "MSG "
+                char* message_start = strchr(nick_start, ' '); // Find the space after <nick>
+
+                if (message_start) {
+                    *message_start = '\0'; // Split <nick> and <message>
+                    message_start++;       // Point to the start of <message>
+                    printf("%s: %s\n", nick_start, message_start); // Format as "<nick>: <message>"
+                } else {
+                    printf("Invalid message format\n"); // Handle cases with no space after <nick>
+                }
+            } else {
+                printf("%s\n", buffer); // Print other server messages as is
+            }
             fflush(stdout);
+
+            // Check if the message is "HELLO 1\n" and reply with "NICK <nickname>"
+            if (strcmp(buffer, "HELLO 1\n") == 0) {
+                char reply[300];
+                snprintf(reply, sizeof(reply), "NICK %s\n", args->client_name);
+                send(sock, reply, strlen(reply), 0);
+            }
         } else if (bytes_received == 0) {
             printf("Server disconnected\n");
             fflush(stdout);
@@ -118,9 +148,15 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    // Prepare arguments for the thread
+    thread_args args;
+    args.sock = sock;
+    strncpy(args.client_name, client_name, sizeof(args.client_name) - 1);
+    args.client_name[sizeof(args.client_name) - 1] = '\0';
+
     // Create a separate thread for receiving messages
     pthread_t receive_thread;
-    if (pthread_create(&receive_thread, NULL, receive_messages, &sock) != 0) {
+    if (pthread_create(&receive_thread, NULL, receive_messages, &args) != 0) {
         perror("Error creating thread");
         fflush(stderr);
         return -1;
@@ -146,9 +182,9 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
-        // Prepend client name to the message
+        // Prepend "MSG " to the message
         char full_message[300];
-        snprintf(full_message, sizeof(full_message), "%s: %s", client_name, message);
+        snprintf(full_message, sizeof(full_message), "MSG %s", message);
         send(sock, full_message, strlen(full_message), 0);
     }
 

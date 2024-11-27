@@ -7,45 +7,89 @@
 #include <sys/select.h>
 #include <sys/types.h>
 #include <errno.h>
+#include <regex.h>
 
 #define MAX_CLIENTS 100
 #define BUFFER_SIZE 1024
 
-// Structure to store a message queue for each client
 typedef struct {
     int client_socket;
+    char nickname[13];  // Max 12 characters + null terminator
     char message_queue[MAX_CLIENTS][BUFFER_SIZE];
     int queue_start;
     int queue_end;
+    int is_authenticated;
 } Client;
 
-// Global array of clients
 Client clients[MAX_CLIENTS];
 int num_clients = 0;
 
-// Function to add a message to the client's message queue
+// Function to validate nickname
+int validate_nickname(const char* nickname) {
+    if (strlen(nickname) > 12) {
+        fprintf(stderr, "Error: Nickname must not exceed 12 characters.\n");
+        fflush(stderr);
+        return 0;
+    }
+
+    regex_t regex;
+    const char* pattern = "^[A-Za-z0-9_]+$";
+
+    if (regcomp(&regex, pattern, REG_EXTENDED)) {
+        fprintf(stderr, "Error compiling regex.\n");
+        fflush(stderr);
+        return 0;
+    }
+
+    int reti = regexec(&regex, nickname, 0, NULL, 0);
+    regfree(&regex);
+
+    if (reti) {
+        fprintf(stderr, "Error: Nickname can only contain alphanumeric characters and underscores.\n");
+        fflush(stderr);
+        return 0;
+    }
+
+    return 1;
+}
+
+// Add message to client's queue
 void add_message_to_queue(Client *client, const char *message) {
-    if ((client->queue_end + 1) % MAX_CLIENTS != client->queue_start) { // Check for queue overflow
+    if ((client->queue_end + 1) % MAX_CLIENTS != client->queue_start) {
         strcpy(client->message_queue[client->queue_end], message);
         client->queue_end = (client->queue_end + 1) % MAX_CLIENTS;
     }
 }
 
-// Function to pop a message from the client's message queue
+// Pop message from client's queue
 int pop_message_from_queue(Client *client, char *message) {
     if (client->queue_start == client->queue_end) {
-        return 0; // Queue is empty
+        return 0;
     }
     strcpy(message, client->message_queue[client->queue_start]);
     client->queue_start = (client->queue_start + 1) % MAX_CLIENTS;
     return 1;
 }
 
-// Function to broadcast a message to all clients except the sender
 void broadcast_message(int sender_socket, const char *message) {
+    char formatted_message[BUFFER_SIZE];
+
+    // Find the sender's nickname
+    const char *sender_nickname = "UNKNOWN";
     for (int i = 0; i < num_clients; i++) {
-        if (clients[i].client_socket != sender_socket) {
-            add_message_to_queue(&clients[i], message);
+        if (clients[i].client_socket == sender_socket) {
+            sender_nickname = clients[i].nickname;
+            break;
+        }
+    }
+
+    // Format the message as "MSG <nickname>: <message>"
+    snprintf(formatted_message, sizeof(formatted_message), "MSG %s %s", sender_nickname, message);
+
+    // Broadcast the formatted message to all clients except the sender
+    for (int i = 0; i < num_clients; i++) {
+        if (clients[i].client_socket != sender_socket && clients[i].is_authenticated) {
+            add_message_to_queue(&clients[i], formatted_message);
         }
     }
 }
@@ -57,7 +101,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // Parse IP and port from the argument
     char *colon_pos = strchr(argv[1], ':');
     if (!colon_pos) {
         fprintf(stderr, "Invalid format. Use <ip>:<port>\n");
@@ -71,7 +114,6 @@ int main(int argc, char *argv[]) {
     ip[colon_pos - argv[1]] = '\0';
     port = atoi(colon_pos + 1);
 
-    // Create the server socket
     int server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket < 0) {
         perror("Socket creation failed");
@@ -79,13 +121,11 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // Define server address
     struct sockaddr_in server_addr;
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = inet_addr(ip);
     server_addr.sin_port = htons(port);
 
-    // Bind the socket
     if (bind(server_socket, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0) {
         perror("Bind failed");
         fflush(stderr);
@@ -93,7 +133,6 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    // Listen for incoming connections
     if (listen(server_socket, 3) < 0) {
         perror("Listen failed");
         fflush(stderr);
@@ -101,7 +140,7 @@ int main(int argc, char *argv[]) {
         return -1;
     }
 
-    printf("Server is listening on %s:%d...\n", ip, port);
+    printf("Server listening on %s:%d...\n", ip, port);
     fflush(stdout);
 
     fd_set read_fds, write_fds;
@@ -122,7 +161,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Use select() to monitor sockets
         int activity = select(max_sd + 1, &read_fds, &write_fds, NULL, NULL);
         if (activity < 0 && errno != EINTR) {
             perror("Select error");
@@ -130,7 +168,6 @@ int main(int argc, char *argv[]) {
             break;
         }
 
-        // Handle new connections
         if (FD_ISSET(server_socket, &read_fds)) {
             struct sockaddr_in client_addr;
             socklen_t addr_len = sizeof(client_addr);
@@ -141,17 +178,20 @@ int main(int argc, char *argv[]) {
                 continue;
             }
 
-            // Add new client to the clients array
             if (num_clients < MAX_CLIENTS) {
                 clients[num_clients].client_socket = new_socket;
                 clients[num_clients].queue_start = 0;
                 clients[num_clients].queue_end = 0;
-                num_clients++;
+                clients[num_clients].is_authenticated = 0;
 
                 char client_ip[INET_ADDRSTRLEN];
                 inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
                 printf("New client connected from %s:%d\n", client_ip, ntohs(client_addr.sin_port));
                 fflush(stdout);
+
+                // Send HELLO 1\n to new client
+                send(new_socket, "HELLO 1\n", 9, 0);
+                num_clients++;
             } else {
                 fprintf(stderr, "Max clients reached. Connection rejected.\n");
                 fflush(stderr);
@@ -159,21 +199,17 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Handle communication with clients
         for (int i = 0; i < num_clients; i++) {
             int client_socket = clients[i].client_socket;
 
-            // Check if client sent a message
             if (FD_ISSET(client_socket, &read_fds)) {
                 char buffer[BUFFER_SIZE] = {0};
                 int bytes_received = recv(client_socket, buffer, sizeof(buffer), 0);
                 if (bytes_received <= 0) {
-                    // Client disconnected
                     printf("Client disconnected\n");
                     fflush(stdout);
                     close(client_socket);
 
-                    // Remove client from array
                     clients[i] = clients[num_clients - 1];
                     num_clients--;
                     i--;
@@ -182,11 +218,37 @@ int main(int argc, char *argv[]) {
 
                 buffer[bytes_received] = '\0';
 
-                // Broadcast the message to other clients
-                broadcast_message(client_socket, buffer);
+                if (!clients[i].is_authenticated) {
+                    if (strncmp(buffer, "NICK ", 5) == 0) {
+                        char *nickname = buffer + 5;
+                        nickname[strcspn(nickname, "\n")] = '\0';
+
+                        if (validate_nickname(nickname)) {
+                            strcpy(clients[i].nickname, nickname);
+                            clients[i].is_authenticated = 1;
+                            send(client_socket, "OK\n", 3, 0);
+                            printf("Client %d authenticated as %s\n", client_socket, nickname);
+                            fflush(stdout);
+                        } else {
+                            close(client_socket);
+                            clients[i] = clients[num_clients - 1];
+                            num_clients--;
+                            i--;
+                        }
+                    }
+                } 
+                if (clients[i].is_authenticated) {
+                    // Check if the message starts with "MSG "
+                    if (strncmp(buffer, "MSG ", 4) == 0) {
+                        char *message_content = buffer + 4; // Skip "MSG "
+                        broadcast_message(client_socket, message_content); // Broadcast trimmed message
+                    } else {
+                        fprintf(stderr, "Invalid message format from client %s\n", clients[i].nickname);
+                        fflush(stderr);
+                    }
+                }
             }
 
-            // Check if client has messages to send
             if (FD_ISSET(client_socket, &write_fds)) {
                 char message[BUFFER_SIZE];
                 while (pop_message_from_queue(&clients[i], message)) {
@@ -199,3 +261,4 @@ int main(int argc, char *argv[]) {
     close(server_socket);
     return 0;
 }
+
