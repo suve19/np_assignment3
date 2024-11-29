@@ -163,7 +163,6 @@ int validate_nickname(const char* nickname) {
 int main(int argc, char* argv[]) {
     if (argc != 3) {
         fprintf(stderr, "Usage: %s <ip>:<port> <name>\n", argv[0]);
-        fflush(stderr);
         return -1;
     }
 
@@ -172,7 +171,6 @@ int main(int argc, char* argv[]) {
     char* colon_pos = strchr(arg, ':');
     if (!colon_pos) {
         fprintf(stderr, "Error: Invalid format. Use <ip>:<port>\n");
-        fflush(stderr);
         return -1;
     }
 
@@ -193,39 +191,37 @@ int main(int argc, char* argv[]) {
     struct sockaddr_in serv_addr;
     if ((sock = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
         perror("Socket creation error");
-        fflush(stderr);
         return -1;
     }
 
     // Specify server address and port
     serv_addr.sin_family = AF_INET;
     serv_addr.sin_port = htons(port);
-
-    // Convert IPv4 address from text to binary
     if (inet_pton(AF_INET, ip, &serv_addr.sin_addr) <= 0) {
         fprintf(stderr, "Invalid address/ Address not supported\n");
-        fflush(stderr);
         return -1;
     }
 
     // Connect to the server
     if (connect(sock, (struct sockaddr*)&serv_addr, sizeof(serv_addr)) < 0) {
-        perror("ERROR");
-        fflush(stderr);
+        perror("ERROR Connection failed");
         return -1;
     }
 
-    // Prepare arguments for the thread
-    thread_args args;
-    args.sock = sock;
-    strncpy(args.client_name, client_name, sizeof(args.client_name) - 1);
-    args.client_name[sizeof(args.client_name) - 1] = '\0';
+    // Perform handshake
+    perform_handshake(sock, client_name);
 
-    // Create a separate thread for receiving messages
+    // Start the receive_messages thread after successful handshake
     pthread_t receive_thread;
-    if (pthread_create(&receive_thread, NULL, receive_messages, &args) != 0) {
-        perror("Error creating thread");
-        fflush(stderr);
+    thread_args* args = malloc(sizeof(thread_args));
+    args->sock = sock;
+    strncpy(args->client_name, client_name, sizeof(args->client_name) - 1);
+    args->client_name[sizeof(args->client_name) - 1] = '\0';
+
+    if (pthread_create(&receive_thread, NULL, receive_messages, args) != 0) {
+        perror("Error creating receive_messages thread");
+        free(args);
+        close(sock);
         return -1;
     }
 
@@ -235,29 +231,24 @@ int main(int argc, char* argv[]) {
         if (fgets(message, sizeof(message), stdin) == NULL) {
             break;
         }
-        message[strcspn(message, "\n")] = '\0';  // Remove newline character
+        message[strcspn(message, "\n")] = '\0'; // Remove newline character
 
-        // Exit on "exit" command
         if (strcmp(message, "exit") == 0) {
             break;
         }
 
-        // Validate message length
         if (strlen(message) > 255) {
             fprintf(stderr, "Error: Message length must not exceed 255 characters.\n");
-            fflush(stderr);
             continue;
         }
 
-        // Prepend "MSG " to the message
         char full_message[300];
         snprintf(full_message, sizeof(full_message), "MSG %s", message);
         send(sock, full_message, strlen(full_message), 0);
     }
 
-    // Close the socket and wait for the receive thread to finish
     close(sock);
     pthread_join(receive_thread, NULL);
-
+    free(args);
     return 0;
 }
