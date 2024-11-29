@@ -223,21 +223,36 @@ int main(int argc, char *argv[]) {
                         char *nickname = buffer + 5;
                         nickname[strcspn(nickname, "\n")] = '\0';
 
-                        if (validate_nickname(nickname)) {
-                            strcpy(clients[i].nickname, nickname);
-                            clients[i].is_authenticated = 1;
-                            send(client_socket, "OK\n", 3, 0);
-                            printf("Client %d authenticated as %s\n", client_socket, nickname);
-                            fflush(stdout);
-                        } else {
+                        if (!validate_nickname(nickname)) {
+                            // Check the specific reason why nickname validation failed
+                            if (strlen(nickname) > 12) {
+                                fprintf(stderr, "Error: Nickname '%s' exceeds 12 characters.\n", nickname);
+                                fflush(stderr);
+                                send(client_socket, "ERROR Nickname must not exceed 12 characters.\n", 46, 0);
+                            } else {
+                                fprintf(stderr, "Error: Nickname '%s' contains invalid characters.\n", nickname);
+                                fflush(stderr);
+                                send(client_socket, "ERROR Nickname can only contain alphanumeric characters and underscores.\n", 72, 0);
+                            }
+
                             close(client_socket);
                             clients[i] = clients[num_clients - 1];
                             num_clients--;
                             i--;
+                            continue;
                         }
+
+                        // If valid, set nickname and authenticate
+                        strcpy(clients[i].nickname, nickname);
+                        clients[i].is_authenticated = 1;
+                        send(client_socket, "OK\n", 3, 0);
+                        printf("Client nickname validated as '%s'\n", nickname);
+                        fflush(stdout);
                     }
                 } 
-                if (clients[i].is_authenticated) {
+                else if (clients[i].is_authenticated) {
+                    // printf("Received from client %s: %s\n", clients[i].nickname, buffer);
+                    // fflush(stdout);
                     // Check if the message starts with "MSG "
                     if (strncmp(buffer, "MSG ", 4) == 0) {
                         char *message_content = buffer + 4; // Skip "MSG "
