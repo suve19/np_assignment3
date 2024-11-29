@@ -1,68 +1,135 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <regex.h>
-#include <sys/socket.h>
-#include <arpa/inet.h>
 #include <unistd.h>
+#include <arpa/inet.h>
 #include <pthread.h>
+#include <regex.h>
 
 #define BUFFER_SIZE 1024
 
-// Structure to pass multiple arguments to the thread function
 typedef struct {
     int sock;
-    char client_name[13];  // Max 12 characters + null terminator
+    char client_name[50];
 } thread_args;
 
+// Function prototypes
+void* receive_messages(void* arg);
+void perform_handshake(int sock, const char* client_name);
+int validate_nickname(const char* nickname);
 
-void* receive_messages(void* args_ptr) {
-    thread_args* args = (thread_args*)args_ptr;
+void* receive_messages(void* arg) {
+    thread_args* args = (thread_args*)arg;
     int sock = args->sock;
     char buffer[BUFFER_SIZE];
+    char partial_message[BUFFER_SIZE] = ""; // Buffer to store incomplete messages
 
     while (1) {
-        memset(buffer, 0, sizeof(buffer));
         int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
-
         if (bytes_received > 0) {
-            buffer[bytes_received] = '\0'; // Null-terminate the received string
+            buffer[bytes_received] = '\0'; // Null-terminate the received data
 
-            // Check for "MSG " prefix
-            if (strncmp(buffer, "MSG ", 4) == 0) {
-                char* nick_start = buffer + 4;   // Start after "MSG "
-                char* message_start = strchr(nick_start, ' '); // Find the space after <nick>
+            // Append received data to the partial_message buffer
+            strncat(partial_message, buffer, sizeof(partial_message) - strlen(partial_message) - 1);
 
-                if (message_start) {
-                    *message_start = '\0'; // Split <nick> and <message>
-                    message_start++;       // Point to the start of <message>
-                    printf("%s: %s\n", nick_start, message_start); // Format as "<nick>: <message>"
+            // Process complete messages split by '\n'
+            char* line = strtok(partial_message, "\n"); // Extract each message
+            char temp_buffer[BUFFER_SIZE];
+            while (line != NULL) {
+                strncpy(temp_buffer, line, sizeof(temp_buffer) - 1);
+                temp_buffer[sizeof(temp_buffer) - 1] = '\0';
+
+                // Process messages starting with "MSG "
+                if (strncmp(temp_buffer, "MSG ", 4) == 0) {
+                    char* nick_start = temp_buffer + 4;   // Start after "MSG "
+                    char* message_start = strchr(nick_start, ' '); // Find the space after <nick>
+
+                    if (message_start) {
+                        *message_start = '\0'; // Split <nick> and <message>
+                        message_start++;       // Point to the start of <message>
+                        printf("%s: %s\n", nick_start, message_start); // Print "<nick>: <message>"
+                        fflush(stdout);
+                    } else {
+                        printf("Invalid message format\n");
+                        fflush(stdout);
+                    }
                 } else {
-                    printf("Invalid message format\n"); // Handle cases with no space after <nick>
+                    printf("%s\n", temp_buffer); // Print other server messages as is
+                    fflush(stdout);
                 }
-            } else {
-                printf("%s\n", buffer); // Print other server messages as is
-            }
-            fflush(stdout);
 
-            // Check if the message is "HELLO 1\n" and reply with "NICK <nickname>"
-            if (strcmp(buffer, "HELLO 1\n") == 0) {
-                char reply[300];
-                snprintf(reply, sizeof(reply), "NICK %s\n", args->client_name);
-                send(sock, reply, strlen(reply), 0);
+                line = strtok(NULL, "\n"); // Move to the next part of the message
+            }
+
+            // Store any remaining incomplete message in partial_message
+            if (line == NULL && buffer[bytes_received - 1] != '\n') {
+                strncpy(partial_message, temp_buffer, sizeof(partial_message) - 1);
+            } else {
+                partial_message[0] = '\0'; // Reset the buffer for the next iteration
             }
         } else if (bytes_received == 0) {
             printf("Server disconnected\n");
             fflush(stdout);
-            break;
+            close(sock);
+            pthread_exit(NULL);
         } else {
-            perror("Error receiving message from server");
+            perror("Error receiving message");
             fflush(stderr);
-            break;
+            close(sock);
+            pthread_exit(NULL);
         }
     }
-    return NULL;
 }
+
+
+// Function to perform the handshake
+void perform_handshake(int sock, const char* client_name) {
+    char buffer[BUFFER_SIZE];
+
+    // Receive "HELLO 1\n"
+    int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+    if (bytes_received > 0) {
+        buffer[bytes_received] = '\0'; // Null-terminate the received string
+
+        if (strcmp(buffer, "HELLO 1\n") == 0) {
+            char reply[300];
+            snprintf(reply, sizeof(reply), "NICK %s\n", client_name);
+            send(sock, reply, strlen(reply), 0);
+
+            // Wait for the server's response to "NICK"
+            memset(buffer, 0, sizeof(buffer));
+            bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+
+            if (bytes_received > 0) {
+                buffer[bytes_received] = '\0';  // Null-terminate the string
+
+                if (strncmp(buffer, "ERROR ", 6) == 0) {
+                    printf("%s", buffer);  // Print the error message
+                    fflush(stdout);
+                    close(sock);  // Close the connection
+                    exit(1);      // Exit the program
+                } else if (strcmp(buffer, "OK\n") == 0 || strcasecmp(buffer, "ok\n") == 0) {
+                    printf("Handshake successful: %s", buffer);
+                    fflush(stdout);
+                } else {
+                    printf("Unexpected response: %s", buffer);
+                    fflush(stdout);
+                }
+            } else if (bytes_received == 0) {
+                printf("Server disconnected\n");
+                fflush(stdout);
+                close(sock);
+                exit(1);
+            } else {
+                perror("Error receiving server response");
+                fflush(stderr);
+                close(sock);
+                exit(1);
+            }
+        }
+    }
+}
+
 
 // Function to validate nickname
 int validate_nickname(const char* nickname) {
