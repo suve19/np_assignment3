@@ -13,74 +13,60 @@ typedef struct {
     char client_name[50];
 } thread_args;
 
-// Function prototypes
-void* receive_messages(void* arg);
-void perform_handshake(int sock, const char* client_name);
-int validate_nickname(const char* nickname);
-
 void* receive_messages(void* arg) {
-    thread_args* args = (thread_args*)arg;
-    int sock = args->sock;
+    int sock = *(int*)arg;
     char buffer[BUFFER_SIZE];
-    char partial_message[BUFFER_SIZE] = ""; // Buffer to store incomplete messages
+    char* message_list[BUFFER_SIZE]; // List to store messages
+    int message_count = 0;          // Number of messages in the list
 
     while (1) {
         int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received > 0) {
             buffer[bytes_received] = '\0'; // Null-terminate the received data
 
-            // Append received data to the partial_message buffer
-            strncat(partial_message, buffer, sizeof(partial_message) - strlen(partial_message) - 1);
+            // Split buffer into messages using '\n'
+            char* message = strtok(buffer, "\n");
+            while (message != NULL) {
+                // Add each complete message to the list
+                message_list[message_count] = strdup(message);
+                message_count++;
+                message = strtok(NULL, "\n");
+            }
 
-            // Process complete messages split by '\n'
-            char* line = strtok(partial_message, "\n"); // Extract each message
-            char temp_buffer[BUFFER_SIZE];
-            while (line != NULL) {
-                strncpy(temp_buffer, line, sizeof(temp_buffer) - 1);
-                temp_buffer[sizeof(temp_buffer) - 1] = '\0';
-
-                // Process messages starting with "MSG "
-                if (strncmp(temp_buffer, "MSG ", 4) == 0) {
-                    char* nick_start = temp_buffer + 4;   // Start after "MSG "
+            // Print all messages in the list
+            for (int i = 0; i < message_count; i++) {
+                if (strncmp(message_list[i], "MSG ", 4) == 0) {
+                    char* nick_start = message_list[i] + 4; // Start after "MSG "
                     char* message_start = strchr(nick_start, ' '); // Find the space after <nick>
 
                     if (message_start) {
                         *message_start = '\0'; // Split <nick> and <message>
                         message_start++;       // Point to the start of <message>
                         printf("%s: %s\n", nick_start, message_start); // Print "<nick>: <message>"
-                        fflush(stdout);
                     } else {
-                        printf("Invalid message format\n");
-                        fflush(stdout);
+                        printf("Invalid message format: %s\n", message_list[i]);
                     }
                 } else {
-                    printf("%s\n", temp_buffer); // Print other server messages as is
-                    fflush(stdout);
+                    printf("%s\n", message_list[i]); // Print other messages as is
                 }
 
-                line = strtok(NULL, "\n"); // Move to the next part of the message
+                free(message_list[i]); // Free the allocated memory
             }
 
-            // Store any remaining incomplete message in partial_message
-            if (line == NULL && buffer[bytes_received - 1] != '\n') {
-                strncpy(partial_message, temp_buffer, sizeof(partial_message) - 1);
-            } else {
-                partial_message[0] = '\0'; // Reset the buffer for the next iteration
-            }
+            // Clear the list after printing
+            message_count = 0;
+
         } else if (bytes_received == 0) {
             printf("Server disconnected\n");
-            fflush(stdout);
             close(sock);
             pthread_exit(NULL);
         } else {
             perror("Error receiving message");
-            fflush(stderr);
             close(sock);
             pthread_exit(NULL);
         }
     }
 }
-
 
 // Function to perform the handshake
 void perform_handshake(int sock, const char* client_name) {
@@ -225,13 +211,14 @@ int main(int argc, char* argv[]) {
         return -1;
     }
 
+    
     // Main thread for sending messages
     char message[256];
     while (1) {
         if (fgets(message, sizeof(message), stdin) == NULL) {
             break;
         }
-        message[strcspn(message, "\n")] = '\0'; // Remove newline character
+        // message[strcspn(message, "\n")] = '\0'; // Remove newline character
 
         if (strcmp(message, "exit") == 0) {
             break;
@@ -245,10 +232,10 @@ int main(int argc, char* argv[]) {
         char full_message[300];
         snprintf(full_message, sizeof(full_message), "MSG %s", message);
         send(sock, full_message, strlen(full_message), 0);
+        
     }
-
-    close(sock);
     pthread_join(receive_thread, NULL);
+    close(sock);
     free(args);
     return 0;
 }
